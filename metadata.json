@@ -1,0 +1,6 @@
+{
+  "name": "FreelancePay",
+  "description": "All-in-one financial platform for freelancers: auto-invoicing, Paystack payment processing, verified client job board, multi-jurisdiction tax calculator, and AI contract management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
