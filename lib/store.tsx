@@ -13,6 +13,9 @@ import {
   TaxRecord,
   Dispute,
   TaxDeduction,
+  RecurringSchedule,
+  RecurringFrequency,
+  RecurringStatus,
 } from './types';
 import {
   INITIAL_INVOICES,
@@ -23,6 +26,7 @@ import {
   INITIAL_CONTRACTS,
   INITIAL_TAX_RECORD,
   INITIAL_DISPUTES,
+  INITIAL_RECURRING_SCHEDULES,
   CURRENT_FREELANCER,
   CURRENT_CLIENT,
 } from './initial-data';
@@ -73,6 +77,18 @@ interface FreelancePayContextType {
   setTaxCountry: (country: 'NG' | 'UK' | 'US') => void;
   // Dispute actions
   resolveDispute: (id: string, resolution: 'release_to_freelancer' | 'refund_to_client', notes: string) => void;
+  // Hydration state
+  isHydrated: boolean;
+  // Recurring Schedule actions
+  recurringSchedules: RecurringSchedule[];
+  addRecurringSchedule: (
+    scheduleData: Omit<RecurringSchedule, 'id' | 'createdAt' | 'totalInvoicesGenerated'>
+  ) => RecurringSchedule;
+  updateRecurringSchedule: (id: string, updates: Partial<RecurringSchedule>) => void;
+  deleteRecurringSchedule: (id: string) => void;
+  toggleRecurringScheduleStatus: (id: string) => void;
+  generateRecurringInvoice: (scheduleId: string) => Invoice | null;
+  checkAndGenerateDueRecurringInvoices: () => { generatedCount: number; invoices: Invoice[] };
   resetAllData: () => void;
 }
 
@@ -88,7 +104,31 @@ const STORAGE_KEYS = {
   TAX_DEDUCTIONS: 'fp_tax_ded_v1',
   TAX_COUNTRY: 'fp_tax_country_v1',
   DISPUTES: 'fp_disputes_v1',
+  RECURRING: 'fp_recurring_schedules_v1',
 };
+
+export function advanceBillingDate(currentDateStr: string, frequency: RecurringFrequency): string {
+  const parts = currentDateStr.split('-');
+  const year = parseInt(parts[0], 10) || 2026;
+  const month = (parseInt(parts[1], 10) || 1) - 1;
+  const day = parseInt(parts[2], 10) || 1;
+  const date = new Date(year, month, day);
+
+  if (frequency === 'weekly') {
+    date.setDate(date.getDate() + 7);
+  } else if (frequency === 'biweekly') {
+    date.setDate(date.getDate() + 14);
+  } else if (frequency === 'monthly') {
+    date.setMonth(date.getMonth() + 1);
+  } else if (frequency === 'quarterly') {
+    date.setMonth(date.getMonth() + 3);
+  }
+
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
 const FreelancePayContext = createContext<FreelancePayContextType | undefined>(undefined);
 
@@ -100,70 +140,138 @@ const RATES_FROM_NGN: Record<Currency, number> = {
   EUR: 1 / 1720,
 };
 
-function getSavedItem<T>(key: string, fallback: T): T {
-  if (typeof window === 'undefined') return fallback;
-  try {
-    const item = localStorage.getItem(key);
-    return item ? JSON.parse(item) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 export function FreelancePayProvider({ children }: { children: React.ReactNode }) {
-  const [role, setRoleState] = useState<UserRole>(() => {
-    if (typeof window === 'undefined') return 'freelancer';
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.ROLE);
-      if (saved === 'freelancer' || saved === 'client' || saved === 'admin') return saved;
-    } catch {}
-    return 'freelancer';
-  });
+  const [isHydrated, setIsHydrated] = useState(false);
+  const [role, setRoleState] = useState<UserRole>('freelancer');
+  const [currency, setCurrencyState] = useState<Currency>('NGN');
+  const [invoices, setInvoices] = useState<Invoice[]>(INITIAL_INVOICES);
+  const [clients, setClients] = useState<ClientProfile[]>(INITIAL_CLIENTS);
+  const [payments, setPayments] = useState<PaymentTransaction[]>(INITIAL_PAYMENTS);
+  const [jobs, setJobs] = useState<JobListing[]>(INITIAL_JOBS);
+  const [applications, setApplications] = useState<JobApplication[]>(INITIAL_APPLICATIONS);
+  const [contracts, setContracts] = useState<Contract[]>(INITIAL_CONTRACTS);
+  const [taxCountry, setTaxCountryState] = useState<'NG' | 'UK' | 'US'>('NG');
+  const [taxDeductions, setTaxDeductions] = useState<TaxDeduction[]>(INITIAL_TAX_RECORD.deductions);
+  const [disputes, setDisputes] = useState<Dispute[]>(INITIAL_DISPUTES);
+  const [recurringSchedules, setRecurringSchedules] = useState<RecurringSchedule[]>(INITIAL_RECURRING_SCHEDULES);
 
-  const [currency, setCurrencyState] = useState<Currency>(() => {
-    if (typeof window === 'undefined') return 'NGN';
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.CURRENCY);
-      if (saved === 'NGN' || saved === 'USD' || saved === 'GBP' || saved === 'EUR') return saved;
-    } catch {}
-    return 'NGN';
-  });
-
-  const [invoices, setInvoices] = useState<Invoice[]>(() =>
-    getSavedItem(STORAGE_KEYS.INVOICES, INITIAL_INVOICES)
-  );
-  const [clients, setClients] = useState<ClientProfile[]>(() =>
-    getSavedItem(STORAGE_KEYS.CLIENTS, INITIAL_CLIENTS)
-  );
-  const [payments, setPayments] = useState<PaymentTransaction[]>(() =>
-    getSavedItem(STORAGE_KEYS.PAYMENTS, INITIAL_PAYMENTS)
-  );
-  const [jobs, setJobs] = useState<JobListing[]>(() =>
-    getSavedItem(STORAGE_KEYS.JOBS, INITIAL_JOBS)
-  );
-  const [applications, setApplications] = useState<JobApplication[]>(() =>
-    getSavedItem(STORAGE_KEYS.APPLICATIONS, INITIAL_APPLICATIONS)
-  );
-  const [contracts, setContracts] = useState<Contract[]>(() =>
-    getSavedItem(STORAGE_KEYS.CONTRACTS, INITIAL_CONTRACTS)
-  );
-  const [taxCountry, setTaxCountryState] = useState<'NG' | 'UK' | 'US'>(() => {
-    if (typeof window === 'undefined') return 'NG';
-    try {
-      const saved = localStorage.getItem(STORAGE_KEYS.TAX_COUNTRY);
-      if (saved === 'NG' || saved === 'UK' || saved === 'US') return saved;
-    } catch {}
-    return 'NG';
-  });
-  const [taxDeductions, setTaxDeductions] = useState<TaxDeduction[]>(() =>
-    getSavedItem(STORAGE_KEYS.TAX_DEDUCTIONS, INITIAL_TAX_RECORD.deductions)
-  );
-  const [disputes, setDisputes] = useState<Dispute[]>(() =>
-    getSavedItem(STORAGE_KEYS.DISPUTES, INITIAL_DISPUTES)
-  );
-
-  // Sync to localStorage
+  // Load saved state from localStorage ONLY on client mount to eliminate SSR hydration mismatches
   useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        const savedRole = localStorage.getItem(STORAGE_KEYS.ROLE);
+        if (savedRole === 'freelancer' || savedRole === 'client' || savedRole === 'admin') {
+          setRoleState(savedRole);
+        }
+
+        const savedCurrency = localStorage.getItem(STORAGE_KEYS.CURRENCY);
+        if (savedCurrency === 'NGN' || savedCurrency === 'USD' || savedCurrency === 'GBP' || savedCurrency === 'EUR') {
+          setCurrencyState(savedCurrency);
+        }
+
+        const savedTaxCountry = localStorage.getItem(STORAGE_KEYS.TAX_COUNTRY);
+        if (savedTaxCountry === 'NG' || savedTaxCountry === 'UK' || savedTaxCountry === 'US') {
+          setTaxCountryState(savedTaxCountry);
+        }
+
+        const savedInvoices = localStorage.getItem(STORAGE_KEYS.INVOICES);
+        if (savedInvoices) {
+          try {
+            const parsed = JSON.parse(savedInvoices);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              // Merge to preserve recurringSchedule links from initial mock data if missing
+              const merged = parsed.map((inv: Invoice) => {
+                const initMatch = INITIAL_INVOICES.find((i) => i.id === inv.id);
+                if (initMatch?.recurringScheduleId && !inv.recurringScheduleId) {
+                  return {
+                    ...inv,
+                    recurringScheduleId: initMatch.recurringScheduleId,
+                    isRecurringGenerated: initMatch.isRecurringGenerated ?? true,
+                  };
+                }
+                return inv;
+              });
+              setInvoices(merged);
+            }
+          } catch {}
+        }
+
+        const savedClients = localStorage.getItem(STORAGE_KEYS.CLIENTS);
+        if (savedClients) {
+          try {
+            const parsed = JSON.parse(savedClients);
+            if (Array.isArray(parsed) && parsed.length > 0) setClients(parsed);
+          } catch {}
+        }
+
+        const savedPayments = localStorage.getItem(STORAGE_KEYS.PAYMENTS);
+        if (savedPayments) {
+          try {
+            const parsed = JSON.parse(savedPayments);
+            if (Array.isArray(parsed) && parsed.length > 0) setPayments(parsed);
+          } catch {}
+        }
+
+        const savedJobs = localStorage.getItem(STORAGE_KEYS.JOBS);
+        if (savedJobs) {
+          try {
+            const parsed = JSON.parse(savedJobs);
+            if (Array.isArray(parsed) && parsed.length > 0) setJobs(parsed);
+          } catch {}
+        }
+
+        const savedApps = localStorage.getItem(STORAGE_KEYS.APPLICATIONS);
+        if (savedApps) {
+          try {
+            const parsed = JSON.parse(savedApps);
+            if (Array.isArray(parsed) && parsed.length > 0) setApplications(parsed);
+          } catch {}
+        }
+
+        const savedContracts = localStorage.getItem(STORAGE_KEYS.CONTRACTS);
+        if (savedContracts) {
+          try {
+            const parsed = JSON.parse(savedContracts);
+            if (Array.isArray(parsed) && parsed.length > 0) setContracts(parsed);
+          } catch {}
+        }
+
+        const savedDeductions = localStorage.getItem(STORAGE_KEYS.TAX_DEDUCTIONS);
+        if (savedDeductions) {
+          try {
+            const parsed = JSON.parse(savedDeductions);
+            if (Array.isArray(parsed)) setTaxDeductions(parsed);
+          } catch {}
+        }
+
+        const savedDisputes = localStorage.getItem(STORAGE_KEYS.DISPUTES);
+        if (savedDisputes) {
+          try {
+            const parsed = JSON.parse(savedDisputes);
+            if (Array.isArray(parsed) && parsed.length > 0) setDisputes(parsed);
+          } catch {}
+        }
+
+        const savedSchedules = localStorage.getItem(STORAGE_KEYS.RECURRING);
+        if (savedSchedules) {
+          try {
+            const parsed = JSON.parse(savedSchedules);
+            if (Array.isArray(parsed) && parsed.length > 0) setRecurringSchedules(parsed);
+          } catch {}
+        }
+      } catch {
+        // Storage access blocked or quota exceeded
+      } finally {
+        setIsHydrated(true);
+      }
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Sync to localStorage only AFTER hydration completes to avoid overwriting saved data
+  useEffect(() => {
+    if (!isHydrated) return;
     try {
       localStorage.setItem(STORAGE_KEYS.ROLE, role);
       localStorage.setItem(STORAGE_KEYS.CURRENCY, currency);
@@ -176,10 +284,12 @@ export function FreelancePayProvider({ children }: { children: React.ReactNode }
       localStorage.setItem(STORAGE_KEYS.TAX_COUNTRY, taxCountry);
       localStorage.setItem(STORAGE_KEYS.TAX_DEDUCTIONS, JSON.stringify(taxDeductions));
       localStorage.setItem(STORAGE_KEYS.DISPUTES, JSON.stringify(disputes));
+      localStorage.setItem(STORAGE_KEYS.RECURRING, JSON.stringify(recurringSchedules));
     } catch {
       // Storage quota or private browsing
     }
   }, [
+    isHydrated,
     role,
     currency,
     invoices,
@@ -191,6 +301,7 @@ export function FreelancePayProvider({ children }: { children: React.ReactNode }
     taxCountry,
     taxDeductions,
     disputes,
+    recurringSchedules,
   ]);
 
   const setRole = (newRole: UserRole) => {
@@ -371,6 +482,130 @@ export function FreelancePayProvider({ children }: { children: React.ReactNode }
     setPayments((prev) => [newTx, ...prev]);
 
     return { success: true, reference: ref };
+  };
+
+  // Recurring Schedule Handlers
+  const addRecurringSchedule = (
+    scheduleData: Omit<RecurringSchedule, 'id' | 'createdAt' | 'totalInvoicesGenerated'>
+  ): RecurringSchedule => {
+    const newSchedule: RecurringSchedule = {
+      ...scheduleData,
+      id: `rec-${new Date().getTime()}`,
+      totalInvoicesGenerated: 0,
+      createdAt: new Date().toISOString(),
+    };
+    setRecurringSchedules((prev) => [newSchedule, ...prev]);
+    return newSchedule;
+  };
+
+  const updateRecurringSchedule = (id: string, updates: Partial<RecurringSchedule>) => {
+    setRecurringSchedules((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, ...updates } : s))
+    );
+  };
+
+  const deleteRecurringSchedule = (id: string) => {
+    setRecurringSchedules((prev) => prev.filter((s) => s.id !== id));
+  };
+
+  const toggleRecurringScheduleStatus = (id: string) => {
+    setRecurringSchedules((prev) =>
+      prev.map((s) =>
+        s.id === id
+          ? { ...s, status: s.status === 'active' ? ('paused' as const) : ('active' as const) }
+          : s
+      )
+    );
+  };
+
+  const generateRecurringInvoice = (scheduleId: string): Invoice | null => {
+    const schedule = recurringSchedules.find((s) => s.id === scheduleId);
+    if (!schedule) return null;
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const dueDays = schedule.dueDaysAfterIssue || 14;
+    const dueDateObj = new Date();
+    dueDateObj.setDate(dueDateObj.getDate() + dueDays);
+    const dueDateStr = dueDateObj.toISOString().split('T')[0];
+
+    const invSeq = Math.floor(100 + Math.random() * 900);
+    const invNum = `INV-REC-${invSeq}`;
+
+    const items =
+      schedule.lineItems && schedule.lineItems.length > 0
+        ? schedule.lineItems
+        : [
+            {
+              id: `li-rec-${new Date().getTime()}`,
+              description: schedule.title,
+              quantity: 1,
+              rate: schedule.amount,
+              amount: schedule.amount,
+            },
+          ];
+
+    const newInvoice = addInvoice({
+      invoiceNumber: invNum,
+      freelancerId: CURRENT_FREELANCER.id,
+      freelancerName: CURRENT_FREELANCER.name,
+      freelancerEmail: CURRENT_FREELANCER.email,
+      freelancerBank: CURRENT_FREELANCER.bankAccount,
+      clientId: schedule.clientId,
+      clientName: schedule.clientName,
+      clientEmail: schedule.clientEmail,
+      clientCompany: schedule.clientCompany,
+      amount: schedule.amount,
+      currency: schedule.currency,
+      status: schedule.autoSend ? 'sent' : 'draft',
+      issueDate: todayStr,
+      dueDate: dueDateStr,
+      description: `${schedule.title} (${schedule.frequency.toUpperCase()} RETAINER)`,
+      lineItems: items,
+      notes:
+        schedule.notes ||
+        `Automated recurring retainer invoice on ${schedule.frequency} schedule. Please settle on or before ${dueDateStr}.`,
+      paystackReference: `PSTK_REC_${new Date().getTime()}`,
+      paymentUrl: `https://paystack.com/pay/fp-${schedule.id}`,
+      processingFee: Math.round(schedule.amount * 0.015),
+      netAmount: schedule.amount - Math.round(schedule.amount * 0.015),
+      recurringScheduleId: schedule.id,
+      isRecurringGenerated: true,
+    });
+
+    const nextBilling = advanceBillingDate(schedule.nextBillingDate, schedule.frequency);
+
+    setRecurringSchedules((prev) =>
+      prev.map((s) =>
+        s.id === scheduleId
+          ? {
+              ...s,
+              totalInvoicesGenerated: (s.totalInvoicesGenerated || 0) + 1,
+              lastGeneratedDate: todayStr,
+              lastGeneratedInvoiceId: newInvoice.id,
+              lastGeneratedInvoiceNumber: newInvoice.invoiceNumber,
+              nextBillingDate: nextBilling,
+            }
+          : s
+      )
+    );
+
+    return newInvoice;
+  };
+
+  const checkAndGenerateDueRecurringInvoices = () => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const generated: Invoice[] = [];
+
+    const dueList = recurringSchedules.filter(
+      (s) => s.status === 'active' && s.nextBillingDate <= todayStr && s.lastGeneratedDate !== todayStr
+    );
+
+    for (const item of dueList) {
+      const inv = generateRecurringInvoice(item.id);
+      if (inv) generated.push(inv);
+    }
+
+    return { generatedCount: generated.length, invoices: generated };
   };
 
   // Client Handlers
@@ -633,6 +868,7 @@ export function FreelancePayProvider({ children }: { children: React.ReactNode }
     setTaxCountryState('NG');
     setTaxDeductions(INITIAL_TAX_RECORD.deductions);
     setDisputes(INITIAL_DISPUTES);
+    setRecurringSchedules(INITIAL_RECURRING_SCHEDULES);
     try {
       localStorage.clear();
     } catch {}
@@ -641,6 +877,7 @@ export function FreelancePayProvider({ children }: { children: React.ReactNode }
   return (
     <FreelancePayContext.Provider
       value={{
+        isHydrated,
         role,
         setRole,
         currency,
@@ -654,6 +891,7 @@ export function FreelancePayProvider({ children }: { children: React.ReactNode }
         contracts,
         taxRecord,
         disputes,
+        recurringSchedules,
         currentUser: CURRENT_FREELANCER,
         currentClient: CURRENT_CLIENT,
         addInvoice,
@@ -674,6 +912,12 @@ export function FreelancePayProvider({ children }: { children: React.ReactNode }
         removeTaxDeduction,
         setTaxCountry,
         resolveDispute,
+        addRecurringSchedule,
+        updateRecurringSchedule,
+        deleteRecurringSchedule,
+        toggleRecurringScheduleStatus,
+        generateRecurringInvoice,
+        checkAndGenerateDueRecurringInvoices,
         resetAllData,
       }}
     >

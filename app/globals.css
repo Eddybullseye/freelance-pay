@@ -36,12 +36,43 @@
 @media print {
   body {
     background-color: white !important;
-    color: black !important;
+    color: #0F172A !important;
   }
-  .no-print {
+  .no-print,
+  .no-print * {
     display: none !important;
   }
   .print-only {
     display: block !important;
+  }
+  @page {
+    size: auto;
+    margin: 12mm 15mm 12mm 15mm;
+  }
+  .print-modal-container {
+    position: static !important;
+    overflow: visible !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+  }
+  .print-modal-box {
+    box-shadow: none !important;
+    border: none !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    display: block !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  .printable-document {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
   }
 }

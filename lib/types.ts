@@ -40,6 +40,37 @@ export interface ClientProfile {
   isVerified?: boolean;
 }
 
+export type RecurringFrequency = 'weekly' | 'biweekly' | 'monthly' | 'quarterly';
+
+export type RecurringStatus = 'active' | 'paused' | 'completed';
+
+export interface RecurringSchedule {
+  id: string;
+  freelancerId: string;
+  clientId: string;
+  clientName: string;
+  clientEmail: string;
+  clientCompany?: string;
+  title: string;
+  description: string;
+  frequency: RecurringFrequency;
+  amount: number;
+  currency: Currency;
+  lineItems: LineItem[];
+  startDate: string;
+  nextBillingDate: string;
+  endDate?: string;
+  dueDaysAfterIssue: number;
+  autoSend: boolean;
+  status: RecurringStatus;
+  totalInvoicesGenerated: number;
+  lastGeneratedDate?: string;
+  lastGeneratedInvoiceId?: string;
+  lastGeneratedInvoiceNumber?: string;
+  createdAt: string;
+  notes?: string;
+}
+
 export interface Invoice {
   id: string;
   invoiceNumber: string;
@@ -70,6 +101,8 @@ export interface Invoice {
   netAmount?: number;
   reminderSentCount: number;
   lastReminderDate?: string;
+  recurringScheduleId?: string;
+  isRecurringGenerated?: boolean;
   createdAt: string;
 }
 

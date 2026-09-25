@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useFreelancePay } from '@/lib/store';
-import { Currency, LineItem } from '@/lib/types';
-import { X, Plus, Trash2, Calendar, User, FileText, Check } from 'lucide-react';
+import { useFreelancePay, advanceBillingDate } from '@/lib/store';
+import { Currency, LineItem, RecurringFrequency } from '@/lib/types';
+import { X, Plus, Trash2, Calendar, User, FileText, Check, Repeat } from 'lucide-react';
 
 interface InvoiceModalProps {
   isOpen: boolean;
@@ -11,7 +11,7 @@ interface InvoiceModalProps {
 }
 
 export function InvoiceModal({ isOpen, onClose }: InvoiceModalProps) {
-  const { clients, addInvoice, addClient, currentUser, formatCurrency } = useFreelancePay();
+  const { clients, addInvoice, addClient, currentUser, formatCurrency, addRecurringSchedule } = useFreelancePay();
 
   // Selected or New Client
   const [selectedClientId, setSelectedClientId] = useState(clients[0]?.id || '');
@@ -27,6 +27,11 @@ export function InvoiceModal({ isOpen, onClose }: InvoiceModalProps) {
   const [issueDate, setIssueDate] = useState('2026-09-25');
   const [dueDate, setDueDate] = useState('2026-10-09');
   const [notes, setNotes] = useState('Payment is due within 14 days. Thank you for your partnership!');
+
+  // Recurring Schedule Setup
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [recurringFrequency, setRecurringFrequency] = useState<RecurringFrequency>('monthly');
+  const [recurringAutoSend, setRecurringAutoSend] = useState(true);
 
   // Line items
   const [lineItems, setLineItems] = useState<LineItem[]>([
@@ -113,7 +118,7 @@ export function InvoiceModal({ isOpen, onClose }: InvoiceModalProps) {
       clientCompany = existing?.companyName || '';
     }
 
-    addInvoice({
+    const newInv = addInvoice({
       invoiceNumber,
       freelancerId: currentUser.id,
       freelancerName: currentUser.name,
@@ -134,7 +139,34 @@ export function InvoiceModal({ isOpen, onClose }: InvoiceModalProps) {
       paystackReference: 'PSTK_PENDING',
       processingFee,
       netAmount: netPayout,
+      isRecurringGenerated: isRecurring,
     });
+
+    if (isRecurring) {
+      const nextDate = advanceBillingDate(issueDate, recurringFrequency);
+      addRecurringSchedule({
+        freelancerId: currentUser.id,
+        clientId,
+        clientName,
+        clientEmail,
+        clientCompany,
+        title: `${description || lineItems[0]?.description || 'Client Services'} (${recurringFrequency.toUpperCase()} Retainer)`,
+        description: description || `Automated recurring retainer invoice on ${recurringFrequency} cadence.`,
+        frequency: recurringFrequency,
+        amount: subtotal,
+        currency,
+        lineItems,
+        startDate: issueDate,
+        nextBillingDate: nextDate,
+        dueDaysAfterIssue: recurringFrequency === 'weekly' ? 7 : 14,
+        autoSend: recurringAutoSend,
+        status: 'active',
+        notes,
+        lastGeneratedDate: issueDate,
+        lastGeneratedInvoiceId: newInv.id,
+        lastGeneratedInvoiceNumber: newInv.invoiceNumber,
+      });
+    }
 
     onClose();
   };
@@ -373,6 +405,81 @@ export function InvoiceModal({ isOpen, onClose }: InvoiceModalProps) {
                 {formatCurrency(netPayout, currency)}
               </span>
             </div>
+          </div>
+
+          {/* Recurring Invoice Option Card */}
+          <div className="p-4 bg-teal-50/50 rounded-xl border border-teal-200/80 space-y-3">
+            <div className="flex items-start gap-2.5">
+              <input
+                type="checkbox"
+                id="modal-recurring-checkbox"
+                checked={isRecurring}
+                onChange={(e) => setIsRecurring(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500 cursor-pointer"
+              />
+              <label htmlFor="modal-recurring-checkbox" className="cursor-pointer">
+                <span className="font-bold text-slate-900 flex items-center gap-1.5 text-xs">
+                  <Repeat className="w-3.5 h-3.5 text-teal-600" />
+                  <span>Set up an automated recurring schedule for this client</span>
+                </span>
+                <span className="text-slate-500 text-[11px] block mt-0.5">
+                  Future invoices will automatically generate on your chosen weekly or monthly schedule with Paystack payment links.
+                </span>
+              </label>
+            </div>
+
+            {isRecurring && (
+              <div className="pl-6 pt-2 border-t border-teal-200/60 space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-700">Schedule Frequency:</span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setRecurringFrequency('weekly')}
+                      className={`px-3 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
+                        recurringFrequency === 'weekly'
+                          ? 'bg-indigo-600 text-white font-semibold'
+                          : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      Weekly (Every 7 days)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRecurringFrequency('monthly')}
+                      className={`px-3 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
+                        recurringFrequency === 'monthly'
+                          ? 'bg-teal-600 text-white font-semibold'
+                          : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      Monthly (Every month)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRecurringFrequency('biweekly')}
+                      className={`px-3 py-1 rounded-md text-xs font-medium cursor-pointer transition-colors ${
+                        recurringFrequency === 'biweekly'
+                          ? 'bg-purple-600 text-white font-semibold'
+                          : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      Bi-Weekly (14 days)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 text-[11px] text-teal-800">
+                  <span className="font-semibold">First Recurring Run:</span>
+                  <span className="font-mono bg-white px-2 py-0.5 rounded border border-teal-200">
+                    {advanceBillingDate(issueDate, recurringFrequency)}
+                  </span>
+                  <span className="text-slate-500">
+                    · Auto-bills {formatCurrency(subtotal, currency)} per cycle
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Notes & Terms */}
